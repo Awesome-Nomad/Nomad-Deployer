@@ -1,0 +1,3 @@
+[submodule "deploy-template"]
+	path = deploy-template
+	url = ../../infrastructure/deploy-template.git

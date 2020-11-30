@@ -1,0 +1,6 @@
+!*.*
+/projects
+.idea
+.DS_Store
+Makefile
+Dockerfile

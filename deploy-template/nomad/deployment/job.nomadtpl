@@ -1,0 +1,139 @@
+job "[[ .service_name]]" {
+  datacenters = ["dc1"]
+  type = "service"
+  spread {
+    attribute = "${node.unique.id}"
+    weight = 100
+  }
+  [[ range $c := .constraints ]]
+  constraint {
+    [[- if $c.key ]]
+    [[- if (gt (len $c.key) 0)]]
+    attribute = "${meta.[[$c.key]]}"[[end]][[end]]
+    [[- if $c.operator ]]
+    [[- if (gt (len $c.operator) 0)]]
+    operator = "[[$c.operator]]"[[end]][[end]]
+    [[- if $c.value ]]
+    [[- if (gt (len $c.value) 0)]]
+    value = "[[$c.value]]"[[end]][[end]]
+  }
+  [[end]]
+
+  group "golang-api" {
+    count = [[or .count 2]]
+    update {
+      auto_revert = [[ or .auto_revert true ]]
+      auto_promote = [[ or .auto_promote false ]]
+      max_parallel = [[ or .max_parallel 1 ]]
+      canary     = [[ or .canary 0 ]]
+    }
+    shutdown_delay = "5s"
+    [[ range $dir :=  .directories ]]
+    volume "[[ $dir.name ]]" {
+      type      = "[[ or $dir.type `host` ]]"
+      read_only = [[ if $dir.read_only ]]true[[ else ]]false[[end]]
+      source    = "[[ $dir.name ]]"
+    }
+    [[end]]
+  task "[[ .service_name]]-golang" {
+      driver = "docker"
+
+      [[ range $dir :=  .directories ]]
+      volume_mount {
+        volume      = "[[ $dir.name ]]"
+        destination = "[[ or $dir.destination `/data` ]]"
+        read_only   = [[ if $dir.read_only ]]true[[ else ]]false[[end]]
+      }
+      [[end]]
+      config {
+
+        dns_servers        = [ [[range $s := .dns_servers]]"[[$s]]",[[end]] ]
+        dns_search_domains = [ [[range $s := .dns_search_domains]]"[[$s]]"[[end]] ]
+
+        auth {
+          username = "registry-readonly"
+          password = "P@&&vv0rd@2020"
+        }
+        image = "[[ or (env "DEPLOY_IMAGE") .image ]]"
+        port_map = {
+          grpc = "8082"
+          http = "8080"
+          metrics = "8081"
+        }
+        sysctl = {
+          "net.core.somaxconn" = "1000"
+        }
+        extra_hosts = [
+          [[ range $host :=  .extra_hosts ]]"[[$host]]",[[end]]
+        ]
+        [[- if gt (len .entrypoint) 0 ]]
+        entrypoint = [ [[ range $c := .entrypoint ]]"[[$c]]",[[end]] ]
+        [[ end ]]
+      }
+      env {
+        TZ = "Asia/Ho_Chi_Minh"
+        CONFIG_FILE = "/local/config.toml"
+        GOMAXPROCS	= "${attr.cpu.numcores}"
+        SERVER_SERVICE_REGISTER		= "true"
+        CONSUL_ADDR = "http://${attr.unique.network.ip-address}:8500"
+        JAEGER_AGENT_IP = "${attr.unique.network.ip-address}"
+        JAEGER_AGENT_PORT = "6831"
+        JAEGER_AGENT_ADDR = "${attr.unique.network.ip-address}:6831"
+      }
+
+      ### Kill timed-out
+      kill_timeout = "15s"
+
+      ### Servives
+      [[ range $service := .services ]]
+      service {
+        name = "[[ or $service.name "${NOMAD_JOB_NAME}"]]"
+        port = "[[ $service.port ]]"
+        tags = [ [[ range $tag := $service.tags ]] "[[$tag]]", [[end]] ]
+        canary_tags = [ [[ range $tag := $service.canary_tags ]] "[[$tag]]", [[end]] ]
+        [[ if $service.prometheus ]]
+        meta {
+          prometheus_enable = "true"
+          prometheus_address = "${NOMAD_ADDR_[[if $service.prometheus_port]][[$service.prometheus_port]][[else]]metrics[[end]]}"
+        }[[end]]
+        check {
+          name = "alive"
+          type = "tcp"
+          port = "[[ $service.port ]]"
+          interval = "10s"
+          timeout = "2s"
+          check_restart {
+            limit = 3
+            grace = "2s"
+            ignore_warnings = false
+          }
+        }
+      }
+      [[ end ]] 
+      
+      ### Template
+      [[ range $file := .app_files ]]
+        template {
+              data = <<EOF
+      [[ fileContents $file.src ]]
+      EOF
+              destination = "local/[[ $file.destination ]]"
+              env = [[ $file.env ]]
+        }
+      [[end]]
+      resources {
+        network {
+          mbits = [[or .resources.mbits 1]]
+          port "grpc" {
+          }
+          port "http" {
+          }
+          port "metrics" {
+          }
+        }
+        cpu = "[[ or .resources.cpu 100]]"
+        memory = "[[ or .resources.memory 300]]"
+      }
+    }
+  }
+}
